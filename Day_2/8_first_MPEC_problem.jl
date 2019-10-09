@@ -1,6 +1,6 @@
 using JuMP, Ipopt, Juniper, Cbc
 
-N = 1
+N = 2
 α = 10
 c_followers = 1
 c = fill(c_followers, N)
@@ -50,5 +50,6 @@ optimize!(m)
 q_total = value(Q) + sum(value.(q))
 price = α - sum(q_total)
 println("""Leader production = $(value(Q))""")
+println("""Follower production = $(value.(q)[1])""")
 println("""Total production = $q_total""")
 println("""Price = $price""")
