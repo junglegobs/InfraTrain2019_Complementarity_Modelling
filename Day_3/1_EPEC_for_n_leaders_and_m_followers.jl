@@ -3,8 +3,8 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 using JuMP, Ipopt, Juniper, Cbc
 
 ### Parameters
-N = 1:2 # Set of followers
-M = 1:2 # set of leaders
+global N = 1:1 # Set of followers
+global M = 1:3 # set of leaders
 lN = length(N)
 lM = length(M)
 α = 10
@@ -12,20 +12,25 @@ c_cst = 1
 c = fill(c_cst, lN)
 C = fill(c_cst, lM)
 K = 1e3
+@enum DiagonalisationType GaussSeidel Jacobi
+diagType = GaussSeidel
+# diagType = Jacobi
+# NOTE: Jacobi method seems to be unstable???
 
-# MINLP, so slightly weird parameters
+### MINLP, so slightly weird parameters for optimizer
 optimizer = Juniper.Optimizer
 params = Dict{Symbol,Any}()
 params[:nl_solver] = with_optimizer(Ipopt.Optimizer, print_level = 0)
 params[:mip_solver] = with_optimizer(Cbc.Optimizer, logLevel = 0)
 m = Model(with_optimizer(optimizer, params))
 
-# Variables
+### Variables
 @variable(m, Q[M] >= 0, start = 5)
 @variable(m, q[N] >= 0)
 @variable(m, b[N], Bin)
 
-# Constraints are seen by all leaders
+### Constraints
+# These are seen by all the leaders
 @constraint(m, [f=N],
     c[f] - α + 2*q[f]
     + sum(
@@ -57,12 +62,15 @@ global storedQ = rand(lM, 1)
 tolerance = 0.01
 maxIter = 10
 while size(storedQ, 2) <= 1 ||
-    all(
-        abs.(storedQ[:, end - 1] .- storedQ[:, end]) .> tolerance
-    ) && size(storedQ, 2) <= maxIter
+        (
+            all(
+                abs.(storedQ[:, end - 1] .- storedQ[:, end]) .> tolerance
+            ) && size(storedQ, 2) <= maxIter
+        )
+    # Julia doesn't declare global variables in while loops (???)
+    global M, N, storedQ
 
     # Repeat last row of storedQ
-    global storedQ
     storedQ = hcat(storedQ, storedQ[:, end])
 
     # Loop over the leaders and solve the optimisation problem each time
@@ -79,16 +87,25 @@ while size(storedQ, 2) <= 1 ||
         @NLobjective(
             m, Max, (α -
             (
-                sum(Q[l] for l in N) + sum(q[f] for f in M)
+                sum(Q[l] for l in M) + sum(q[f] for f in N)
             )
             )*Q[l]- C[l]*Q[l]
         )
 
         # Fix the values of all the leaders who aren't being considered
         MM = [ll for ll in M if ll != l]
-        for ll in MM
-            fix(Q[ll], storedQ[ll,end], force = true)
+        if diagType == GaussSeidel
+            for ll in MM
+                fix(Q[ll], storedQ[ll,end], force = true)
+            end
+        elseif diagType == Jacobi
+            for ll in MM
+                fix(Q[ll], storedQ[ll, end - 1], force = true)
+            end
+        else
+            throw()
         end
+
 
         # Solve the optimisation problem
         optimize!(m)
@@ -101,5 +118,5 @@ end
 # Show storedQ
 println("""
 Leaders = $(storedQ[:, end]))
-Followers = $(value.(q))
+Followers = $(value.(q).data)
 """)
