@@ -2,22 +2,26 @@ using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 using JuMP, Ipopt, Juniper, Cbc
 
+# <editor-fold> Initial things
 ### Parameters
-global N = 1:1 # Set of followers
-global M = 1:3 # set of leaders
-lN = length(N)
-lM = length(M)
+global F = 1:1 # Set of followers
+global L = 1:3 # set of leaders
+lenF = length(F)
+lenL = length(L)
 α = 10
-c_cst = 1
-c = fill(c_cst, lN)
-C = fill(c_cst, lM)
-K = 1e3
+c_cst = 1 # Marginal costs are the same for everyone
+MC_F = fill(c_cst, lenF)
+MC_L = fill(c_cst, lenL)
+M = 1e3 # Big M parameter
 @enum DiagonalisationType GaussSeidel Jacobi
 diagType = GaussSeidel
 # diagType = Jacobi
 # NOTE: Jacobi method seems to be unstable???
+# </editor-fold>
 
-### MINLP, so slightly weird parameters for optimizer
+# <editor-fold> Create initial model
+### Define Model and associated Optimizer
+# MINLP, so slightly weird parameters for optimizer
 optimizer = Juniper.Optimizer
 params = Dict{Symbol,Any}()
 params[:nl_solver] = with_optimizer(Ipopt.Optimizer, print_level = 0)
@@ -25,38 +29,40 @@ params[:mip_solver] = with_optimizer(Cbc.Optimizer, logLevel = 0)
 m = Model(with_optimizer(optimizer, params))
 
 ### Variables
-@variable(m, Q[M] >= 0, start = 5)
-@variable(m, q[N] >= 0)
-@variable(m, b[N], Bin)
+@variable(m, Q[L] >= 0, start = 5)
+@variable(m, q[F] >= 0)
+@variable(m, b[F], Bin)
 
 ### Constraints
 # These are seen by all the leaders
-@constraint(m, [f=N],
-    c[f] - α + 2*q[f]
+@constraint(m, [f=F],
+    MC_F[f] - α + 2*q[f]
     + sum(
-        q[ff] for ff in N if ff != f
+        q[ff] for ff in F if ff != f
     )
     + sum(
-        Q[l] for l in M
+        Q[l] for l in L
     )
     >= 0
 )
-@constraint(m, [f=N],
-    q[f] <= K*(1 - b[f])
+@constraint(m, [f=F],
+    q[f] <= M*(1 - b[f])
 )
-@constraint(m, [f=N],
-    c[f] - α + 2*q[f]
+@constraint(m, [f=F],
+    MC_F[f] - α + 2*q[f]
     + sum(
-        q[ff] for ff in N if ff != f
+        q[ff] for ff in F if ff != f
     )
     + sum(
-        Q[l] for l in M
+        Q[l] for l in L
     )
-    <= K*b[f]
+    <= M*b[f]
 )
+# </editor-fold>
 
+# <editor-fold> Loop to solve
 # Initialise Q values - rows = Q, columns = iteration
-global storedQ = rand(lM, 1)
+global storedQ = rand(lenL, 1)
 
 # Loop until tolerance met or maximum iterations
 tolerance = 0.01
@@ -68,15 +74,15 @@ while size(storedQ, 2) <= 1 ||
             ) && size(storedQ, 2) <= maxIter
         )
     # Julia doesn't declare global variables in while loops (???)
-    global M, N, storedQ
+    global L, F, storedQ
 
     # Repeat last row of storedQ
     storedQ = hcat(storedQ, storedQ[:, end])
 
     # Loop over the leaders and solve the optimisation problem each time
-    for l in M
+    for l in L
         # Unfix the leaders, but also make sure they're positive!
-        for l in M
+        for l in L
             if is_fixed(Q[l])
                 unfix(Q[l])
                 set_lower_bound(Q[l], 0)
@@ -87,13 +93,13 @@ while size(storedQ, 2) <= 1 ||
         @NLobjective(
             m, Max, (α -
             (
-                sum(Q[l] for l in M) + sum(q[f] for f in N)
+                sum(Q[l] for l in L) + sum(q[f] for f in F)
             )
-            )*Q[l]- C[l]*Q[l]
+            )*Q[l]- MC_L[l]*Q[l]
         )
 
         # Fix the values of all the leaders who aren't being considered
-        MM = [ll for ll in M if ll != l]
+        MM = [ll for ll in L if ll != l]
         if diagType == GaussSeidel
             for ll in MM
                 fix(Q[ll], storedQ[ll,end], force = true)
@@ -114,9 +120,12 @@ while size(storedQ, 2) <= 1 ||
         storedQ[l,end] = value(Q[l])
     end
 end
+# </editor-fold>
 
 # Show storedQ
 println("""
 Leaders = $(storedQ[:, end]))
 Followers = $(value.(q).data)
 """)
+
+σ
